@@ -1,0 +1,715 @@
+---
+title: "NHATS_baseline_preprocessing"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(readstata13)
+round_1_sp <- read.dta13('/Users/ChristianHaudenschild/Documents/NHATS Analysis/data/NHATS_Round_1_SP_File.dta')
+```
+
+```{r}
+dim(round_1_sp)
+```
+
+##Cohort derivation
+
+###Exclusion Criteria
+
+####1. Baseline dementia 
+    - (hc1disescn9) - 1 - YES, 2 - NO, -1 Inapplicable, -8 DK, -9 Missing
+    - filter hc1disescn9 == 2
+    - n post filter = 7146
+
+```{r}
+round_1_cohort = round_1_sp %>%
+  filter(hc1disescn9 ==2)
+```
+
+####2. Missing grip strength data
+    - remove rows missing grip strength data
+    - n post filter = 5969
+```{r}
+#examination of grip strength related fields
+# grep(pattern = 'gr1handtstd1',x = colnames(round_1_cohort))
+# grep(pattern = 'gr1grp2noat9',x = colnames(round_1_cohort))
+# round_1_cohort[,747:764]
+```
+
+```{r}
+#check if a respondent has reading 2 but not reading 1 - a single respondent 
+#soln. moved their reading 2 into their reading 1 field
+sum(is.na(round_1_cohort$gr1grp1rdng) & !is.na(round_1_cohort$gr1grp2rdng))
+
+round_1_cohort[is.na(round_1_cohort$gr1grp1rdng) & !is.na(round_1_cohort$gr1grp2rdng),750] = 
+round_1_cohort[is.na(round_1_cohort$gr1grp1rdng) & !is.na(round_1_cohort$gr1grp2rdng),759]
+
+#now can safely remove all NAs based on first reading, n = 5969
+round_1_cohort = round_1_cohort[complete.cases(round_1_cohort$gr1grp1rdng),]
+
+#check
+sum(is.na(round_1_cohort$gr1grp1rdng))
+```
+
+####3. Missing BMI data
+    - weight in pounds (hw1currweigh), height in feet (hw1howtallft), height in inches (hw1howtallin)
+    - filter out missing rows for either field
+    - n post filter = 5822
+
+```{r}
+round_1_cohort = round_1_cohort[complete.cases(round_1_cohort$hw1currweigh),]
+round_1_cohort = round_1_cohort[complete.cases(round_1_cohort$hw1howtallin),]
+
+#check
+sum(is.na(round_1_cohort$hw1currweigh))
+sum(is.na(round_1_cohort$hw1howtallin))
+sum(is.na(round_1_cohort$hw1howtallft))
+
+```
+
+##Derived measures
+
+####1. Max grip strength
+    - maximum of two grip strength measurements (gr1grp1rdng and gr1grp2rdng)
+    - appended as max_grip
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(max_grip = case_when(gr1grp1rdng >= gr1grp2rdng~gr1grp1rdng,
+                              gr1grp1rdng < gr1grp2rdng~gr1grp2rdng,
+                              is.na(gr1grp2rdng) ~ gr1grp1rdng))
+```
+
+####2. BMI 
+    - defined as self-reported baseline weight in kg divided by height in meters-squared
+    - appended as weight_kg, height_m, and BMI respectively
+```{r}
+#append height and weight conversions
+round_1_cohort = round_1_cohort %>%
+  mutate(weight_kg = hw1currweigh/2.2046, height_m = (hw1howtallft*12 +hw1howtallin)*0.0254) %>%
+  mutate(BMI = weight_kg/height_m^2)
+  #dplyr::select(hw1currweigh,hw1howtallft,hw1howtallin,weight_kg,height_m,BMI)
+```
+
+####3. High waist circumference
+    - waist measure in inches (wc1wstmsrinc)
+      - convert to cm
+    - binary indicator for high waist circumference,  >= 102 cm in males, >= 88 cm in females
+    - appended as high_wc
+    
+```{r}
+#explicit w/ case_when statement because of NAs
+round_1_cohort = round_1_cohort %>%
+  mutate(high_wc = case_when(wc1wstmsrinc*2.54>=102 & r1dgender ==1 ~ 1,
+                             wc1wstmsrinc*2.54>=88 & r1dgender ==2 ~ 1,
+                             wc1wstmsrinc*2.54<102 & r1dgender ==1 ~ 0,
+                             wc1wstmsrinc*2.54<88 & r1dgender ==2 ~ 0))
+                             
+#round_1_cohort %>%
+  #dplyr::select(wc1wstmsrinc,r1dgender,high_wc)
+
+#104 with no waist circumference data
+sum(is.na(round_1_cohort$high_wc))
+```
+
+####4. Sarcopenia
+    - grip strength < 35.5 kg in males, <20 kg in females 
+    - appended as sarcopenia
+
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(sarcopenia = case_when(max_grip < 35.5 & r1dgender == 1 ~ 1,
+                                max_grip < 20 & r1dgender == 2 ~ 1,
+                                max_grip >= 35.5 & r1dgender == 1 ~ 0,
+                                max_grip >= 20 & r1dgender == 2 ~ 0))
+
+#should be zero NAs, as those with missing grip strength info were already excluded
+sum(is.na(round_1_cohort$sarcopenia))
+```
+
+####5. SDOC Sarcopenia
+    - grip strength/BMI < 1.05 in males, < 0.79 in females
+    - appended as sdoc_sarcopenia
+    
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(sdoc_sarcopenia = case_when((max_grip/BMI) < 1.05 & r1dgender == 1 ~ 1,
+                                     (max_grip/BMI) < 0.79 & r1dgender == 2 ~ 1,
+                                     (max_grip/BMI) >= 1.05 & r1dgender == 1 ~ 0,
+                                     (max_grip/BMI) >= 0.79 & r1dgender == 2 ~ 0))
+
+#again, should be no NAs
+sum(is.na(round_1_cohort$sdoc_sarcopenia))
+```
+
+####6. Race (sensitive information)
+    - White: rl1yourrace1 == 1
+    - Black: rl1yourrace2 == 1
+    - Asian: rl1yourrace5 == 1
+    - Other: rl1yourrace3 == 1 (American Indian)
+             rl1yourrace4 == 1 (Alaskan Native)
+             rl1yourrace6 == 1 (Native Hawaiian)
+             rl1yourrace7 == 1 (Pacific Islander)
+             rl1yourrace8 == 1 (Other)
+    
+    Hispanic race:
+    - r1dracehisp
+             
+```{r}
+# round_1_cohort = round_1_cohort %>%
+#   mutate(race = case_when(rl1yourrace1 == 1 ~ 'White',
+#                           rl1yourrace2 == 1 ~ 'Black',
+#                           rl1yourrace5 == 1 ~ 'Asian',
+#                           rl1yourrace3 == 1 | rl1yourrace4 == 1 |
+#                           rl1yourrace6 == 1 | r11yourrace7 == 1 |
+#                           rl1yourrace8 == 1 ~ 'Other'))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(race = case_when(rl1dracehisp == 1 ~ 'White',
+                          rl1dracehisp == 2 ~ 'Black',
+                          rl1dracehisp == 3 ~ 'Other',
+                          rl1dracehisp == 4 ~ 'Hispanic'))
+```
+
+####7. Smoking status
+    - Current - sd1smokedreg == 1 (smoked regularly) & sd1smokesnow == 1 (smokes now)
+    - Former smoker - sd1smokedreg == 1 & sd1smokesnow == 2
+    - Never - sd1smokedreg == 2 & sd1smokesnow == 2
+    - appended as smoking_status
+    
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(smoking_status = case_when(sd1smokedreg == 1 & sd1smokesnow == 1 ~ 'Current',
+                                    sd1smokedreg == 1 & sd1smokesnow == 2 ~ 'Former',
+                                    sd1smokedreg == 2 ~ 'Never'))
+
+#check 
+sum(na.omit(round_1_cohort$sd1smokedreg == 2 & round_1_cohort$sd1smokesnow ==1))
+
+#single NA
+which(is.na(round_1_cohort$smoking_status))
+
+round_1_cohort[4548,] %>%
+  dplyr::select(sd1smokedreg,sd1smokesnow,smoking_status)
+```
+
+####8. Education 
+    - el1higstschl (note, in prospectus, this is listed as op1leveledu -w
+        which is the field corresponding to other person's education - check this)
+    - Less than high school: 1 - no schooling,
+                             2 - 1st to 8th grade,
+                             3 - 9th to 12th grade, no diploma
+    - High school to some college: 4 - high school graduate (diploma or equivalent)
+                                   5 - vocational, technical, business or trade school certificate 
+                                       beyond high school
+                                   6 - some college but no degree
+    - College degree: 7 - associate's degree
+                      8 - bachelor-s degree
+    - Graduate degree: 9 - master's, professional, or doctoral
+    - appended as education
+                    
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(education = case_when(el1higstschl == 1 | el1higstschl == 2|
+                               el1higstschl == 3 ~ 'Less than high school',
+                               el1higstschl == 4 | el1higstschl == 5|
+                               el1higstschl == 6 ~ 'High school to some college',
+                               el1higstschl == 7 | el1higstschl == 8 ~
+                                 'College degree',
+                               el1higstschl == 9 ~ 'Graduate degree'))
+
+
+#4 NAs
+
+round_1_cohort[is.na(round_1_cohort$el1higstschl),'el1higstschl']
+sum(is.na(round_1_cohort$education))                     
+```
+
+####Physical activity
+
+- Participation in activities:
+  - pa1evrgowalk (1 - YES, 2 - NO)
+  - pa1vigoactv (1 - YES, 2 - NO)
+  - pa1favact (712 - walking/jogging,
+               713 - other outdoor recreating activities,
+               799 - other active leisure)
+               
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(ever_walk = case_when(pa1evrgowalk == 1 ~ 1,
+                               pa1evrgowalk == 2 ~ 0),
+         vigor_actv = case_when(pa1vigoractv == 1 ~ 1,
+                                pa1vigoractv == 2 ~ 0))
+```
+
+
+####Comorbidities
+- heart_disease:
+      - hc1disescn1 - had heart attack, 1 - YES 2 - NO or hc1disescn2 - has heart disease, 1 - YES 2 - NO
+- hypertension:
+      - hc1disescn3 - has high blood pressure, 1 - YES 2 - NO
+- arthritis:
+      - hc1disescn4 - has arthritis, 1 - YES 2 - NO
+- diabetes:
+      - hc1disescn6 - has diabetes, 1 - YES 2 - NO
+- lung_disease:
+      - hc1disescn7 - has lung disease, 1 - YES 2 - NO
+- stroke:
+      - hc1disescn8 - has had stroke, 1 - YES 2 - NO
+- cancer:
+      - hc1disescn10 - has cancer, 1 - YES 2 - NO
+- appended as written
+
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(heart_disease = case_when(hc1disescn1 == 1 | hc1disescn2 == 1 ~ 1,
+                                   hc1disescn1 == 2 | hc1disescn2 == 2 ~ 0))
+
+#0 NAs in heart disease
+#round_1_cohort[is.na(round_1_cohort$hc1disescn1) & is.na(round_1_cohort$hc1disescn2),]
+sum(is.na(round_1_cohort$heart_disease))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(hypertension = case_when(hc1disescn3 == 1 ~ 1,
+                                  hc1disescn3 == 2 ~0))
+
+#7 NAs
+sum(is.na(round_1_cohort$hypertension))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(arthritis = case_when(hc1disescn4 == 1 ~ 1,
+                                  hc1disescn4 == 2 ~0))
+
+#12 NAs
+sum(is.na(round_1_cohort$arthritis))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(diabetes = case_when(hc1disescn6 == 1 ~ 1,
+                                  hc1disescn6 == 2 ~0))
+
+#2 NAs
+sum(is.na(round_1_cohort$diabetes))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(lung_disease = case_when(hc1disescn7 == 1 ~ 1,
+                                  hc1disescn7 == 2 ~0))
+
+#4 NAs
+sum(is.na(round_1_cohort$lung_disease))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(stroke = case_when(hc1disescn8 == 1 ~ 1,
+                                  hc1disescn8 == 2 ~0))
+
+#5 NAs
+sum(is.na(round_1_cohort$stroke))
+
+round_1_cohort = round_1_cohort %>%
+  mutate(cancer = case_when(hc1disescn10 == 1 ~ 1,
+                                  hc1disescn10 == 2 ~0))
+
+#2 NAs
+sum(is.na(round_1_cohort$cancer))
+```
+
+#### Age category
+- r1d2intvrage 
+- 65-69 - 1
+- 70-74 - 2
+- 75-79 - 3
+- 80-84 - 4
+- 85+ - 5,6
+- appended as age_category
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(age_category  = case_when(r1d2intvrage == 1 ~ '65-69',
+                                   r1d2intvrage == 2 ~ '70-74',
+                                   r1d2intvrage == 3 ~ '75-79',
+                                   r1d2intvrage == 4 ~ '80-84',
+                                   r1d2intvrage == 5 | r1d2intvrage == 6 ~ '85+'))
+
+#check
+sum(is.na(round_1_cohort$age_category))
+```
+
+#### Obesity defined by BMI
+- BMI >= 30 kg/m^2
+- appended as obesity
+
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(obesity = case_when(BMI>=30~ 1,
+                             BMI<30 ~0))
+
+#check
+sum(is.na(round_1_cohort$obesity))
+```
+
+### AD8 Dementia classification (NHATS definition)
+
+```{r}
+
+ad8_processing = function(sp, ROUND) {
+  for (i in 1:nrow(sp)) {
+    
+    ###inital codes for dementia_class
+    #nursing home resident
+    if (sp[i,'r1dresid'] == 7) {
+      sp[i,'dementia_class'] = -9
+    }                             
+  
+    if (sp[i,'r1dresid'] %in% c(6,8)) {
+      sp[i,'dementia_class'] = -1
+    }
+    #default to NA
+    else {
+      sp[i,'dementia_class'] = NA
+    }
+    
+    #default AD8 score to NA
+    sp[i,'ad8_score'] = NA
+    
+    #Get AD8 score if respondent type is proxy and dementia class is NA
+    if (sp[i,paste('is',ROUND,'resptype',sep = '')] == 2 & is.na(sp[i,'dementia_class'])) {
+      
+      sp[i,'ad8_score'] = 0
+      
+      for (j in 1:8) {
+        
+        item = paste('cp',ROUND,'chgthink',j,sep = '')
+        recoded_item = paste('ad8_item_',j,sep = '')
+        sp[i,recoded_item] = NA
+        
+        #Change reported by proxy (response 1) or dementia/alzheimer's reported by proxy (response 3)
+        if (sp[i,item] %in% c(1,3)) {
+          sp[i,recoded_item] = 1
+        }
+        
+        #No change reported by proxy
+        if (!is.na(sp[i,item]) & sp[i,item] == 2) {
+          sp[i,recoded_item] = 0
+        }
+        
+        sp[i,'ad8_score'] = sp[i,'ad8_score'] + sp[i,recoded_item]
+      }
+      
+    }
+    
+    #fill inapplicable AD8 with -1 and AD8 items with NA
+    else {
+      for (j in 1:8) {
+        recoded_item = paste('ad8_item_',j,sep = '')
+        sp[i,recoded_item] = -1
+        sp[i,paste('ad8_item_',j,sep = '')] = NA
+      }
+    }
+    
+    #if AD8 criterion met in previous round, then set AD8 score = 8 - not applicable for round 1
+    if (ROUND != 1) {
+      if (sp[i,paste('cp',ROUND,'dad8dem',sep = '')] == 1 & is.na(sp[i,'dementia_class'])) {
+        sp[i, 'ad8_score'] = 8
+      }
+    }
+    
+    #create ad8_binary (0 - does not meet AD8 criterion, 1 - does meet AD8 criterion)
+    if (sp[i,'ad8_score'] >= 2 & !is.na(sp[i,'ad8_score'])) {
+      sp[i,'ad8_binary'] = 1
+    }
+    
+    else if (sp[i, 'ad8_score'] %in% c(0,1) | 
+             (all(is.na(subset(sp[i,],select = ad8_item_1:ad8_item_8))) & is.na(sp[i,'dementia_class']))) {
+      
+      sp[i,'ad8_binary'] = 0
+    }
+    
+  }
+  return(sp)
+} 
+
+round_1_cohort = ad8_processing(round_1_cohort,1)
+```
+
+### Orientation domain (NHATS definition)
+
+Sum of date recall and president naming
+
+```{r}
+
+orientation_domain_processing = function(sp, ROUND) {
+  
+  for (i in 1:nrow(sp)) {
+  
+    dat_string = paste('cg',ROUND,'todaydat', sep = '')
+    
+    if (ROUND != 4) {
+      for (j in 1:4) {
+        
+        dat_str = paste(dat_string,j,sep = '')
+        item_str = paste('date_item_',j, sep = '')
+        
+        if (sp[i,dat_str] %in% c(-7,2)) {
+          sp[i,item_str] = 0 
+        }
+        
+        else if (sp[i, dat_str] %in% c(-1,-9) | is.na(sp[i,dat_str])) {
+          sp[i,item_str] = NA
+        }
+        
+        else {
+          sp[i,item_str] = 1
+        }
+      }
+    }
+    
+    else {
+      for (j in c(1,2,3,5)) {
+        
+        dat_str = paste(dat_string,j,sep = '')
+        item_str = paste('date_item_',j, sep = '')
+        
+        if (j == 5) {
+          item_str = 'date_item_4'
+        }
+        
+        if (sp[i,dat_str] %in% c(-7,2)) {
+          sp[i,item_str] = 0 
+        }
+        
+        else if (sp[i, dat_str] %in% c(-1,-9) | is.na(sp[i,dat_str])) {
+          sp[i,item_str] = NA
+        }
+        
+        else  {
+          sp[i,item_str] = 1
+        }
+      }
+    }
+    
+    sp[i,'date_score'] = sp[i,'date_item_1'] + sp[i,'date_item_2'] + sp[i,'date_item_3'] + sp[i,'date_item_4']
+    
+    #all NAs in date_items and can't speak to SP (cg*speaktosp == 2) result in date_score == NA
+    speaktosp = paste('cg',ROUND,'speaktosp',sep = '')
+    if (is.na(sp[i,'date_item_1']) & is.na(sp[i,'date_item_2']) & is.na(sp[i,'date_item_3']) & is.na(sp[i,'date_item_4'] & !is.na(sp[i,speaktosp]) &sp[i,speaktosp] == 2)) {
+      sp[i,'date_score'] = NA
+    }
+    
+    pres_strings = c(paste('cg',ROUND,'presidna1',sep = ''),
+                     paste('cg',ROUND,'presidna3',sep = ''),
+                     paste('cg',ROUND,'vpname1',sep = ''),
+                     paste('cg',ROUND,'vpname3',sep = ''))
+    
+    for (j in 1:4) {
+      dat_str = pres_strings[j]
+      item_str = paste('o_item_',j, sep = '')
+      
+      if (sp[i,dat_str] == 0 & !is.na(sp[i,dat_str])) {
+        sp[i,item_str] = 0
+      }
+      
+      else if (is.na(sp[i,dat_str])) {
+        sp[i,item_str] = NA
+      }
+      
+      else if (sp[i,dat_str] == 1) {
+        sp[i,item_str] = 1
+      }
+    }
+    
+    sp[i,'orientation_score'] = sp[i,'o_item_1'] + sp[i,'o_item_2'] + sp[i,'o_item_3'] + sp[i,'o_item_4']
+    
+    #all NAs in o_items and can't speak to SP (cg*speaktosp == 2) result in orientation_score == NA
+    if (is.na(sp[i,'o_item_1']) & is.na(sp[i,'o_item_2']) & is.na(sp[i,'o_item_3']) & is.na(sp[i,'o_item_4']) & !is.na(sp[i,speaktosp]) &sp[i,speaktosp] == 2) {
+      sp[i,'orientation_score'] = NA
+    }
+    
+    sp[i,'orientation_domain'] = sp[i,'date_score'] + sp[i,'orientation_score']
+  }
+  return(sp)
+}
+
+
+round_1_cohort = orientation_domain_processing(round_1_cohort, 1)
+```
+
+#### Clock score preprocessing
+
+** 8) EXECUTIVE FUNCTION DOMAIN: CLOCK DRAWING SCORE **;
+r2clock_scorer=cg2dclkdraw;
+if cg2dclkdraw in (-2,-9) then r2clock_scorer=.;
+if cg2dclkdraw in (-3,-4,-7) then r2clock_scorer=0;
+** IMPUTE MEAN SCORE TO PERSONS MISSING A CLOCK **;
+if cg2dclkdraw=-9 and cg2speaktosp=1 then r2clock_scorer=2; ** IF PROXY SAID CAN ASK SP **;
+if cg2dclkdraw=-9 and cg2speaktosp=-1 then r2clock_scorer=3; ** IF SELF RESPONDENT **;
+
+
+```{r}
+clock_score_processing = function(sp,ROUND) {
+  draw_str = paste('cg',ROUND,'dclkdraw',sep = '')
+  speak_to_sp_str = paste('cg',ROUND,'speaktosp',sep = '')
+  
+  for (i in 1:nrow(sp)) {
+    sp[i,'clock_test'] = sp[i,draw_str]
+    
+    if (sp[i,draw_str] %in% c(-1,-2) | is.na(sp[i,draw_str])) {
+      sp[i,'clock_test'] = NA
+    }
+    
+    else if (sp[i,draw_str] %in% c(-3,-4,-7)) {
+      sp[i,'clock_test'] = 0
+    }
+    
+    else if (sp[i, draw_str] == -9 & sp[i,speak_to_sp_str] == 1) {
+      sp[i,'clock_test'] = 2
+    }
+    
+    else if (sp[i, draw_str] == -9) {
+      sp[i,'clock_test'] = NA
+    }
+  }
+  return(sp)
+}
+
+round_1_cohort = clock_score_processing(round_1_cohort,1)
+```
+
+##Domain 3: memory (immediate word recall, delayed word recall)
+
+```{r}
+
+memory_processing = function(sp, ROUND) {
+ 
+  imm_str = paste('cg',ROUND,'dwrdimmrc',sep = '')
+  del_str = paste('cg',ROUND,'dwrddlyrc',sep = '')
+  
+  for (i in 1:2) {
+    
+    str = c(imm_str,del_str)[i]
+    item_str = paste('mem_item_',i, sep = '') 
+    
+    sp[,item_str] = sp[,str]
+    sp[sp[,str] %in% c(-1,-2), item_str] = NA
+    sp[sp[,str] %in% c(-7,-3), item_str] = 0
+    
+  }
+   
+  sp$memory_domain = sp$mem_item_1 + sp$mem_item_2
+  return(sp)
+}
+
+round_1_cohort = memory_processing(round_1_cohort, 1)
+```
+
+##Binarize domain scores + update dementia class with domain score info
+
+```{r}
+
+binary_processing = function(sp, ROUND) {
+  
+  sp$clock_binary = ifelse(sp$clock_test>1 & sp$clock_test<=5,0,1)
+  sp$orientation_binary = ifelse(sp$orientation_domain>3 & sp$orientation_domain<=8,0,1)
+  sp$memory_binary = ifelse(sp$memory_domain>3 & sp$memory_domain <= 20, 0,1)
+  
+  sp$domains_score = sp$clock_binary + sp$orientation_binary + sp$memory_binary
+  
+  for (i in 1:nrow(sp)) {
+    if (is.na(sp[i,'dementia_class']) & sp[i,paste('cg',ROUND,'speaktosp',sep = '')] %in% c(-1,1)) {
+      
+      if (is.na(sp[i,'domains_score'])) {
+        sp[i,'dementia_class'] = NA
+      }
+      
+      else if (sp[i,'domains_score']>=2) {
+        sp[i,'dementia_class'] = 2
+      }
+      
+      else if (sp[i,'domains_score'] == 1) {
+        sp[i,'dementia_class'] = 1
+      }
+      
+      else if (sp[i,'domains_score'] == 0) {
+        sp[i,'dementia_class'] = 0
+      }
+    }
+  }
+  
+  return(sp)
+}
+
+round_1_cohort = binary_processing(round_1_cohort,1)
+
+```
+
+## STEADI derivation
+
+
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(screen_1 =  case_when((hc1faleninyr == 2 | is.na(hc1faleninyr))  & 
+                              (hc1worryfall == 2 | is.na(hc1worryfall))  & 
+                              (ss1prbbalcrd ==2 | is.na(ss1prbbalcrd)) ~ 'Low risk',
+                              hc1faleninyr == 1  |
+                              hc1worryfall == 1  |
+                              ss1prbbalcrd ==1 |
+                                hc1multifall == 1 |
+                                hc1faleninyr == 1 ~ 'Medium risk')) %>%
+  mutate(screen_2 = case_when(screen_1 == 'Medium risk' & ba1ftdmreslt==2 ~ 'Potential high risk',
+                              screen_1 == 'Medium risk' & ba1ftdmreslt==3 & (ba1rsn1ftstd==1 | ba1rsn2ftstd==1 | ba1rsn3ftstd==1) ~ 'Potential high risk',
+                              screen_1 == 'Medium risk' & ((is.na(ba1ftdmreslt) & ba1dblftadm==3) | (is.na(ba1ftdmreslt) & ba1dblftadm==4))~ 'Potential high risk',
+                              screen_1 == 'Medium risk' & ch12chstrslt==2 ~ 'Potential high risk',
+                              screen_1 == 'Medium risk' & ch12chstrslt==3 &  (ch1chstntat1==1 | ch1chstntat2==1 | ch1chstntat3==1) ~ 'Potential high risk',
+                              screen_1 == 'Medium risk' & ((is.na(ch12chstrslt) & ch1drchradm==3) | (is.na(ch12chstrslt) & ch1drchradm==4)) ~ 'Potential high risk')) %>%
+  mutate(screen_3 = case_when(screen_2 == 'Potential high risk' & hc1multifall==1 ~ 'High risk',
+                              screen_2 == 'Potential high risk' & hc1brokebon1==1 ~'High risk')) %>%
+  mutate(STEADI_score = case_when(screen_1 == 'Low risk' ~ 'Low risk',
+                                  screen_1 == 'Medium risk' & is.na(screen_2) & is.na(screen_3) ~ 'Medium risk',
+                                  screen_1 == 'Medium risk' & screen_2 == 'Potential high risk' & is.na(screen_3) ~ 'Medium risk',
+                                  screen_1 == 'Medium risk' & screen_3 == 'High risk' ~ 'High risk'))
+
+```
+
+
+
+#### Grouping 1 sarcopenia, obesity, sarcopenic obesity, neither
+- Sarcopenia defined using grip strength cutoffs
+- Obesity derived from BMI>=30 (variable name obesity)
+- Sarcopenic obesity: both
+- Neither
+- appended as grouping_1_so_status
+
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(grouping_1_so_status = case_when(sarcopenia == 1 & obesity == 0 ~ 'Sarcopenia',
+                                          obesity == 1  &  sarcopenia == 0 ~ 'Obesity',
+                                          sarcopenia == 1 & obesity == 1 ~ 'Sarcopenic Obesity',
+                                          sarcopenia == 0 & obesity == 0 ~ 'Neither'))
+
+#check
+sum(is.na(round_1_cohort$grouping_1_so_status))
+```
+
+#### Grouping 2 sarcopenia, obesity, sarcopenic obesity, neither
+- Sarcopenia defined using grip strength cutoffs
+- Obesity derived from WC (variable name high_wc)
+- Sarcopenic obesity: both
+- Neither
+- appended as grouping_2_so_status
+
+```{r}
+round_1_cohort = round_1_cohort %>%
+  mutate(grouping_2_so_status = case_when(sarcopenia == 1 & high_wc == 0 ~ 'Sarcopenia',
+                                          high_wc == 1 & sarcopenia == 0~ 'Obesity',
+                                          sarcopenia == 1 & high_wc == 1 ~ 'Sarcopenic Obesity',
+                                          sarcopenia == 0 & high_wc == 0 ~ 'Neither'))
+
+#check
+sum(is.na(round_1_cohort$grouping_2_so_status))
+```
+
+#### Export as csv
+```{r}
+#write.csv(round_1_cohort, 'processed_baseline.csv')
+```

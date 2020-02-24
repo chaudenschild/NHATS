@@ -1,0 +1,526 @@
+---
+title: "NHATS_year_join"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, message = False, warning = False}
+library(tidyverse)
+library(readstata13)
+
+round_1_cohort <- read.csv('processed_baseline.csv', header = T)
+round_2_sp <- read.dta13('NHATS_Round_2_SP_File_v2.dta')
+round_3_sp <- read.dta13('NHATS_Round_3_SP_File.dta')
+round_4_sp <- read.dta13('NHATS_Round_4_SP_File.dta')
+round_5_sp <- read.dta13('NHATS_Round_5B_SP_File.dta')
+round_6_sp <- read.dta13('NHATS_Round_6_SP_File_V2.dta')
+round_7_sp <- read.dta13('NHATS_Round_7_SP_File.dta')
+round_8_sp <- read.dta13('NHATS_Round_8B_SP_File.dta')
+```
+
+##Round 2-8 preprocessing for AD8 dementia class
+
+```{r}
+ad8_processing = function(sp, ROUND) {
+  for (i in 1:nrow(sp)) {
+    
+    ###inital codes for dementia_class
+    #nursing home resident
+    if (sp[i,'r1dresid'] == 7) {
+      sp[i,'dementia_class'] = -9
+    }                             
+  
+    if (sp[i,'r1dresid'] %in% c(6,8)) {
+      sp[i,'dementia_class'] = -1
+    }
+    #default to NA
+    else {
+      sp[i,'dementia_class'] = NA
+    }
+    
+    #default AD8 score and AD8 binary to NA
+    sp[i,'ad8_score'] = NA
+    sp[i,'ad8_binary'] = NA
+    
+    #Get AD8 score if respondent type is proxy and dementia class is NA
+    if (sp[i,paste('is',ROUND,'resptype',sep = '')] == 2 & is.na(sp[i,'dementia_class'])) {
+      
+      sp[i,'ad8_score'] = 0
+      
+      for (j in 1:8) {
+        
+        item = paste('cp',ROUND,'chgthink',j,sep = '')
+        recoded_item = paste('ad8_item_',j,sep = '')
+        sp[i,recoded_item] = NA
+        
+        #Change reported by proxy (response 1) or dementia/alzheimer's reported by proxy (response 3)
+        if (sp[i,item] %in% c(1,3)) {
+          sp[i,recoded_item] = 1
+        }
+        
+        #No change reported by proxy
+        if (!is.na(sp[i,item]) & sp[i,item] == 2) {
+          sp[i,recoded_item] = 0
+        }
+        
+        sp[i,'ad8_score'] = sp[i,'ad8_score'] + sp[i,recoded_item]
+      }
+      
+    }
+    
+    #fill inapplicable AD8 with -1 and AD8 items with NA
+    else {
+      for (j in 1:8) {
+        recoded_item = paste('ad8_item_',j,sep = '')
+        sp[i,recoded_item] = -1
+        sp[i,paste('ad8_item_',j,sep = '')] = NA
+      }
+    }
+    
+    #if AD8 criterion met in previous round, then set AD8 score = 8 - not applicable for round 1
+    if (ROUND != 1) {
+      if (sp[i,paste('cp',ROUND,'dad8dem',sep = '')] == 1 & is.na(sp[i,'dementia_class'])) {
+        sp[i, 'ad8_score'] = 8
+      }
+    }
+    
+    #create ad8_binary (0 - does not meet AD8 criterion, 1 - does meet AD8 criterion)
+    if (sp[i,'ad8_score'] >= 2 & !is.na(sp[i,'ad8_score'])) {
+      sp[i,'ad8_binary'] = 1
+    }
+    
+    else if (sp[i, 'ad8_score'] %in% c(0,1) | 
+             (all(is.na(subset(sp[i,],select = ad8_item_1:ad8_item_8))) & is.na(sp[i,'dementia_class']))) {
+      
+      sp[i,'ad8_binary'] = 0
+    }
+    
+    #update dementia class
+    
+    if (is.na(sp[i, 'dementia_class']) & !is.na(sp[i,'ad8_binary']) & sp[i,'ad8_binary'] == 1) {
+      sp[i,'dementia_class'] = 1
+    }
+    
+    else if (is.na(sp[i, 'dementia_class']) & !is.na(sp[i,'ad8_binary']) & sp[i,'ad8_binary'] == 2 & sp[i,paste('cg',ROUND,'speaktosp',sep='')] ==2) {
+      sp[i,'dementia_class'] = 3
+    }
+    
+  }
+  return(sp)
+}  
+
+
+round_2_processed = ad8_processing(round_2_sp,2)
+round_3_processed = ad8_processing(round_3_sp,3)
+round_4_processed = ad8_processing(round_4_sp,4)
+round_5_processed = ad8_processing(round_5_sp,5)
+round_6_processed = ad8_processing(round_6_sp,6)
+round_7_processed = ad8_processing(round_7_sp,7)
+round_8_processed = ad8_processing(round_8_sp,8)
+```
+
+##Round 2-8 preprocessing for domain 1: orientation (date recall, president naming)
+
+cg*todaydat1: 
+MONTH
+-9 Missing
+-7 RF
+-1 Inapplicable
+1 Yes
+2 No/DK
+
+cg*todaydat2:
+DAY
+
+cg*todaydat3:
+YEAR
+
+cg*todaydat4:
+DAY OF WEEK
+
+```{r}
+
+orientation_domain_processing = function(sp, ROUND) {
+  
+  #dat recoding
+  dat_string = paste('cg',ROUND,'todaydat', sep = '')
+  
+  if (ROUND != 4) {
+    for (i in 1:4) {
+      dat_str = paste(dat_string,i,sep = '')
+      item_str = paste('date_item_',i, sep = '')
+      sp[sp[,dat_str] %in% c(-7,2), item_str] = 0
+      sp[sp[,dat_str] %in% c(-1,-9), item_str] = NA
+      sp[sp[,dat_str] == 1, item_str] = 1
+    }
+  }
+  
+  else {
+    for (i in c(1,2,3,5)) {
+      dat_str = paste(dat_string,i,sep = '')
+      item_str = paste('date_item_',i, sep = '')
+      if (i == 5) {
+        item_str = 'date_item_4'
+      }
+      sp[sp[,dat_str] %in% c(-7,2), item_str] = 0
+      sp[sp[,dat_str] %in% c(-1,-9), item_str] = NA
+      sp[sp[,dat_str] == 1, item_str] = 1
+    }
+  }
+  
+  sp$date_score = sp$date_item_1 + sp$date_item_2 + sp$date_item_3 + sp$date_item_4
+  
+  #all NAs in date_items and can't speak to SP (cg*speaktosp == 2) result in date_score == NA
+  speaktosp = paste('cg',ROUND,'speaktosp',sep = '')
+  all_na = is.na(sp$date_item_1) & is.na(sp$date_item_2) & is.na(sp$date_item_3) & is.na(sp$date_item_4)
+  sp[sp[all_na, speaktosp] == 2,'date_score'] = NA
+  
+  
+  pres_strings = c(paste('cg',ROUND,'presidna1',sep = ''),
+                   paste('cg',ROUND,'presidna3',sep = ''),
+                   paste('cg',ROUND,'vpname1',sep = ''),
+                   paste('cg',ROUND,'vpname3',sep = ''))
+  
+  for (i in 1:4) {
+    dat_str = pres_strings[i]
+    item_str = paste('o_item_',i, sep = '')
+    sp[sp[,dat_str] %in% c(-7,2), item_str] = 0
+    sp[sp[,dat_str] %in% c(-1,-9), item_str] = NA
+    sp[sp[,dat_str] == 1, item_str] = 1
+  }
+  
+  sp$orientation_score = sp$o_item_1 + sp$o_item_2 + sp$o_item_3 + sp$o_item_4
+  
+  #all NAs in o_items and can't speak to SP (cg*speaktosp == 2) result in orientation_score == NA
+  all_na_pres = is.na(sp$o_item_1) & is.na(sp$o_item_2) & is.na(sp$o_item_3) & is.na(sp$o_item_4)
+  sp[sp[all_na_pres, speaktosp] == 2,'orientation_score'] = NA
+  
+  sp$orientation_domain = sp$date_score + sp$orientation_score
+ 
+  return(sp)
+}
+
+
+round_2_processed = orientation_domain_processing(round_2_processed,2)
+round_3_processed = orientation_domain_processing(round_3_processed,3)
+round_4_processed = orientation_domain_processing(round_4_processed,4)
+round_5_processed = orientation_domain_processing(round_5_processed,5)
+round_6_processed = orientation_domain_processing(round_6_processed,6)
+round_7_processed = orientation_domain_processing(round_7_processed,7)
+round_8_processed = orientation_domain_processing(round_8_processed,8)
+
+```
+
+
+##Round 2-8 preprocessing for domain 2: executive function (clock score)
+
+** 8) EXECUTIVE FUNCTION DOMAIN: CLOCK DRAWING SCORE **;
+r2clock_scorer=cg2dclkdraw;
+if cg2dclkdraw in (-2,-9) then r2clock_scorer=.;
+if cg2dclkdraw in (-3,-4,-7) then r2clock_scorer=0;
+** IMPUTE MEAN SCORE TO PERSONS MISSING A CLOCK **;
+if cg2dclkdraw=-9 and cg2speaktosp=1 then r2clock_scorer=2; ** IF PROXY SAID CAN ASK SP **;
+if cg2dclkdraw=-9 and cg2speaktosp=-1 then r2clock_scorer=3; ** IF SELF RESPONDENT **;
+
+
+```{r}
+clock_score_processing = function(sp,ROUND) {
+  draw_str = paste('cg',ROUND,'dclkdraw',sep = '')
+  speak_to_sp_str = paste('cg',ROUND,'speaktosp',sep = '')
+  
+  for (i in 1:nrow(sp)) {
+    sp[i,'clock_test'] = sp[i,draw_str]
+    
+    if (sp[i,draw_str] %in% c(-1,-2) | is.na(sp[i,draw_str])) {
+      sp[i,'clock_test'] = NA
+    }
+    
+    else if (sp[i,draw_str] %in% c(-3,-4,-7)) {
+      sp[i,'clock_test'] = 0
+    }
+    
+    else if (sp[i, draw_str] == -9 & sp[i,speak_to_sp_str] == 1) {
+      sp[i,'clock_test'] = 2
+    }
+    
+    else if (sp[i, draw_str] == -9 & sp[i,speak_to_sp_str] == -1) {
+      sp[i,'clock_test'] = 3
+    }
+    
+    else if (sp[i, draw_str] == -9) {
+      sp[i,'clock_test'] = NA
+    }
+  }
+  return(sp)
+}
+
+round_2_processed = clock_score_processing(round_2_processed,2)
+round_3_processed = clock_score_processing(round_3_processed,3)
+round_4_processed = clock_score_processing(round_4_processed,4)
+round_5_processed = clock_score_processing(round_5_processed,5)
+round_6_processed = clock_score_processing(round_6_processed,6)
+round_7_processed = clock_score_processing(round_7_processed,7)
+round_8_processed = clock_score_processing(round_8_processed,8)
+```
+
+
+##Round 2-8 preprocessing for domain 3: memory (immediate word recall, delayed word recall)
+
+```{r}
+
+memory_processing = function(sp, ROUND) {
+ 
+  imm_str = paste('cg',ROUND,'dwrdimmrc',sep = '')
+  del_str = paste('cg',ROUND,'dwrddlyrc',sep = '')
+  
+  for (i in 1:2) {
+    
+    str = c(imm_str,del_str)[i]
+    item_str = paste('mem_item_',i, sep = '') 
+    
+    sp[,item_str] = sp[,str]
+    sp[sp[,str] %in% c(-1,-2), item_str] = NA
+    sp[sp[,str] %in% c(-7,-3), item_str] = 0
+    
+  }
+   
+  sp$memory_domain = sp$mem_item_1 + sp$mem_item_2
+  return(sp)
+}
+
+round_2_processed = memory_processing(round_2_processed,2)
+round_3_processed = memory_processing(round_3_processed,3)
+round_4_processed = memory_processing(round_4_processed,4)
+round_5_processed = memory_processing(round_5_processed,5)
+round_6_processed = memory_processing(round_6_processed,6)
+round_7_processed = memory_processing(round_7_processed,7)
+round_8_processed = memory_processing(round_8_processed,8)
+```
+
+
+##Binary categorization for three domains
+
+Executive function domain (clock score) cutoffs:
+
+1 < clock_test <= 5 then clock_binary = 0
+0 <= clock_test <= 1 then clock_binary = 1
+
+Orientation domain cutoffs:
+
+3 < orientation_domain <= 8 then orientation_binary = 0
+0 <= orientation_domain <= 3 then orientation_binary = 1
+
+Memory domain cutoffs:
+
+3 < memory_domain <= 20 then memory_binary = 0
+0 <= memory_domain <= 3 then memory_binary = 1
+
+Dementia class update rules:
+
+Domains score >=2 then dementia_class = 2 (probable dementia)
+Domains_score == 1 then dementia_class = 1 (possible dementia)
+Domains_score = 0 then dementia_class = 0 (no dementia)
+
+
+```{r}
+
+binary_processing = function(sp, ROUND) {
+  
+  sp$clock_binary = ifelse(sp$clock_test>1 & sp$clock_test<=5,0,1)
+  sp$orientation_binary = ifelse(sp$orientation_domain>3 & sp$orientation_domain<=8,0,1)
+  sp$memory_binary = ifelse(sp$memory_domain>3 & sp$memory_domain <= 20, 0,1)
+  
+  sp$domains_score = sp$clock_binary + sp$orientation_binary + sp$memory_binary
+  
+  for (i in 1:nrow(sp)) {
+    if (is.na(sp[i,'dementia_class']) & sp[i,paste('cg',ROUND,'speaktosp',sep = '')] %in% c(-1,1)) {
+      
+      if (is.na(sp[i,'domains_score'])) {
+        sp[i,'dementia_class'] = NA
+      }
+      
+      else if (sp[i,'domains_score']>=2) {
+        sp[i,'dementia_class'] = 2
+      }
+      
+      else if (sp[i,'domains_score'] == 1) {
+        sp[i,'dementia_class'] = 1
+      }
+      
+      else if (sp[i,'domains_score'] == 0) {
+        sp[i,'dementia_class'] = 0
+      }
+    }
+  }
+  
+  return(sp)
+}
+
+round_2_processed = binary_processing(round_2_processed,2)
+round_3_processed = binary_processing(round_3_processed,3)
+round_4_processed = binary_processing(round_4_processed,4)
+round_5_processed = binary_processing(round_5_processed,5)
+round_6_processed = binary_processing(round_6_processed,6)
+round_7_processed = binary_processing(round_7_processed,7)
+round_8_processed = binary_processing(round_8_processed,8)
+```
+
+
+
+##Join yearly data (rounds 2-8) to baseline preprocessed file
+
+```{r}
+round_1_scores = round_1_cohort %>%
+  select(spid,
+         grouping_1_so_status,
+         grouping_2_so_status,
+         sdoc_sarcopenia,
+         sarcopenia,
+         obesity,
+         high_wc,
+         gender = r1dgender,
+         race,
+         age_category,
+         smoking_status,
+         education,
+         heart_disease,
+         hypertension,
+         arthritis,
+         diabetes,
+         lung_disease,
+         stroke,
+         cancer,
+         ever_walk,
+         vigor_actv,
+         self_rated_memory = cg1ratememry,
+         imm_recall = cg1dwrdimmrc,
+         delayed_recall = cg1dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class,
+         STEADI_score)
+                                       
+round_2_scores = round_2_processed %>%
+  select(spid,
+         self_rated_memory = cg2ratememry,
+         imm_recall = cg2dwrdimmrc,
+         delayed_recall = cg2dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+round_3_scores = round_3_processed %>%
+  select(spid,
+         self_rated_memory = cg3ratememry,
+         imm_recall = cg3dwrdimmrc,
+         delayed_recall = cg3dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+round_4_scores = round_4_processed %>%
+  select(spid,
+         self_rated_memory = cg4ratememry,
+         imm_recall = cg4dwrdimmrc,
+         delayed_recall = cg4dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+round_5_scores = round_5_processed %>%
+  select(spid,
+         self_rated_memory = cg5ratememry,
+         imm_recall = cg5dwrdimmrc,
+         delayed_recall = cg5dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+round_6_scores = round_6_processed %>%
+  select(spid,
+         self_rated_memory = cg6ratememry,
+         imm_recall = cg6dwrdimmrc,
+         delayed_recall = cg6dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+round_7_scores = round_7_processed %>%
+  select(spid,
+         self_rated_memory = cg7ratememry,
+         imm_recall = cg7dwrdimmrc,
+         delayed_recall = cg7dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+round_8_scores = round_8_processed %>%
+  select(spid,
+         self_rated_memory = cg8ratememry,
+         imm_recall = cg8dwrdimmrc,
+         delayed_recall = cg8dwrddlyrc,
+         clock_test,
+         clock_binary,
+         orientation_domain,
+         orientation_binary,
+         memory_domain,
+         memory_binary,
+         ad8_score,
+         ad8_binary,
+         dementia_class)
+
+join_ = round_1_scores %>%
+  left_join(round_2_scores, by = 'spid', suffix = c('_1','_2')) %>%
+  left_join(round_3_scores, by = 'spid', suffix = c('_2','_3')) %>%
+  left_join(round_4_scores, by = 'spid', suffix = c('_3','_4')) %>%
+  left_join(round_5_scores, by = 'spid', suffix = c('_4','_5')) %>%
+  left_join(round_6_scores, by = 'spid', suffix = c('_5','_6')) %>%
+  left_join(round_7_scores, by = 'spid', suffix = c('_6','_7')) %>%
+  left_join(round_8_scores, by = 'spid', suffix = c('_7','_8')) 
+
+#write.csv(join_, 'joined_data.csv')
+```
