@@ -83,6 +83,21 @@ def sarcopenia(x):
 
 round_1_cohort['sarcopenia'] = round_1_cohort.apply(sarcopenia, axis=1)
 
+
+def sarcopenia_cutoff2(x):
+    if pd.isna(x.max_grip) or pd.isna(x.r1dgender):
+        return np.nan
+    if x.r1dgender == '1 MALE':
+        return True if x.max_grip < 26 else False
+    elif x.r1dgender == '2 FEMALE':
+        return True if x.max_grip < 16 else False
+    else:
+        raise Exception
+
+
+round_1_cohort['sarcopenia_cutoff2'] = round_1_cohort.apply(
+    sarcopenia_cutoff2, axis=1)
+
 # SDOC Sarcopenia (defined by grip strength/BMI ratio)
 # grip strength/BMI < 1.05 in males, < 0.79 in females
 # appended as sdoc_sarcopenia
@@ -304,6 +319,25 @@ def grouping_1_so_status(x):
 round_1_cohort['grouping_1_so_status'] = round_1_cohort.apply(
     grouping_1_so_status, axis=1)
 
+
+def grouping_1_so_status_cutoff2(x):
+
+    if pd.isna(x.sarcopenia_cutoff2) or pd.isna(x.obesity):  # shouldn't happen
+        return np.nan
+
+    if x.sarcopenia_cutoff2 and not x.obesity:
+        return 'Sarcopenia'
+    elif not x.sarcopenia_cutoff2 and x.obesity:
+        return 'Obesity'
+    elif x.sarcopenia_cutoff2 and x.obesity:
+        return 'Sarcopenic Obesity'
+    elif not x.sarcopenia_cutoff2 and not x.obesity:
+        return 'Neither'
+
+
+round_1_cohort['grouping_1_so_status_cutoff2'] = round_1_cohort.apply(
+    grouping_1_so_status_cutoff2, axis=1)
+
 # Grouping 2: sarcopenia, obesity, sarcopenic obesity, neither
 # obesity derived from waist circumference (variable name high_wc)
 # appended as grouping_2_so_status
@@ -327,6 +361,25 @@ def grouping_2_so_status(x):
 
 round_1_cohort['grouping_2_so_status'] = round_1_cohort.apply(
     grouping_2_so_status, axis=1)
+
+
+def grouping_2_so_status_cutoff2(x):
+
+    if pd.isna(x.sarcopenia_cutoff2) or pd.isna(x.high_wc):
+        return np.nan
+
+    if x.sarcopenia_cutoff2 and not x.high_wc:
+        return 'Sarcopenia'
+    elif not x.sarcopenia_cutoff2 and x.high_wc:
+        return 'Obesity'
+    elif x.sarcopenia_cutoff2 and x.high_wc:
+        return 'Sarcopenic Obesity'
+    elif not x.sarcopenia_cutoff2 and not x.high_wc:
+        return 'Neither'
+
+
+round_1_cohort['grouping_2_so_status_cutoff2'] = round_1_cohort.apply(
+    grouping_2_so_status_cutoff2, axis=1)
 
 
 # STEADI score
@@ -383,243 +436,5 @@ def STEADI_score(x, round):
 round_1_cohort['STEADI_score'] = round_1_cohort.apply(
     STEADI_score, round=1, axis=1)
 
-
-# Cognitive measure derivations
-# functions suitable for baseline as well as subsequent rounds
-# ref https://www.nhats.org/scripts/documents/NHATS_Addendum_to_Technical_Paper_5_SAS_Programming_Statements_Jul2013.pdf
-# AD8 + dementia_class
-
-# alteration from NHATS (flipped scale, NHATS uses 1,2,3 for likely, probable, no dem)
-#   dementia class 0: no dementia
-#   dementia class 1: probable
-#   dementia class 2: likely
-
-
-def dementia_class(x, round):
-    hcdisescn9 = f'hc{round}disescn9'
-    rdresid = f'r{round}dresid'
-    isresptype = f'is{round}resptype'
-
-    if x[rdresid] in ['3 Residential Care Resident not nursing home (FQ only)', '7 Residential care not nursing home in R1 and R2 (FQ only)']:
-        return -9
-
-    # nursing home/ residential care residents, deceased
-    elif x[rdresid] in ['4 Nursing Home Resident', '6 Deceased', '8 Nursing home in R1 and R2 (FQ only)']:
-        return -1
-    # dementia_class = probable if reported by self/proxy
-    if x[hcdisescn9] in ['1 YES', '7 PREVIOUSLY REPORTED'] and x[isresptype] in ['1 SAMPLE PERSON (SP)', '2 PROXY']:
-        return 1
-
-
-def ad8_score(x, round):
-
-    def think(item): return f'cp{round}chgthink{item}'
-    isresptype = f'is{round}resptype'
-
-    ad8_items = [-1 for i in range(8)]
-    if x[isresptype] == '2 PROXY' and pd.isna(x.dementia_class):
-        for i in range(8):
-            if x[think(i + 1)] in [' 1 YES, A CHANGE', " 3 DEMENTIA/ALZHEIMER'S REPORTED BY PROXY"]:
-                ad8_items[i] = 1
-            elif x[think(i + 1)] == ' 2 NO, NO CHANGE':
-                ad8_items[i] = 0
-            else:
-                ad8_items[i] = np.nan
-
-    ad8_score = sum(filter(pd.notna, ad8_items))
-
-    if round != 1:  # max ad8 score if ad8 criteria already met in previous round
-        if x[f'cp{round}dad8dem'] == '1 DEMENTIA RESPONSE TO ANY AD8 ITEMS IN PRIOR ROUND' and x[isresptype] == '2 PROXY' and pd.isna(x.dementia_class):
-            ad8_score = 8
-
-    return ad8_score
-
-
-def ad8_dementia(x, round):
-    if x.ad8_score >= 2:
-        return 1
-    # if all missing, or score is 0 or 1
-    elif x.ad8_score in [0, 1]:
-        return 2
-    else:
-        return np.nan
-
-
-def update_dementia_class(x, round):
-    cgspeaktosp = f'cg{round}speaktosp'
-    if pd.isna(x.dementia_class):
-        if x.ad8_dementia == 1:  # probable by ad8 criteria
-            return 1
-        elif x.ad8_dementia == 2 and x[cgspeaktosp] == '2 NO':
-            return 0
-    else:
-        return x.dementia_class
-
-
-# Orientation domain
-# date score and president naming
-
-def orientation_domain(x, round):
-
-    def date_str(item):
-        if round == 4 and item == 4:  # fix a miscode in round 4
-            return 'cg4todaydat5'
-        return f'cg{round}todaydat{item}'
-
-    date_items = [np.nan for _ in range(4)]
-    for i in range(4):
-        if x[date_str(i + 1)] in [' 1 YES', '1 YES']:
-            date_items[i] = 1
-        elif x[date_str(i + 1)] in [" 2 NO/DON'T KNOW", '-7 RF']:
-            date_items[i] = 0
-
-    if pd.notna(date_items).sum() == 0:
-        # Proxy can speak to SP but SP unable to answer
-        if x[f'cg{round}speaktosp'] in [' 1 YES', '1 YES']:
-            date_sum = 0
-        else:
-            date_sum = np.nan  # Proxy can't speak to SP
-    else:
-        date_sum = sum(filter(pd.notna, date_items))
-
-    pres_str = [f'cg{round}presidna1', f'cg{round}presidna3',
-                f'cg{round}vpname1', f'cg{round}vpname3']
-
-    pres_items = [np.nan for _ in range(len(pres_str))]
-    for i, pres in enumerate(pres_str):
-        if x[pres] == ' 1 YES':
-            pres_items[i] = 1
-        elif x[pres] in [" 2 NO/DON'T KNOW", '-7 RF']:
-            pres_items[i] = 0
-
-    if pd.notna(pres_items).sum() == 0:
-        # Proxy can speak to SP but SP unable to answer
-        if x[f'cg{round}speaktosp'] in [' 1 YES', '1 YES']:
-            pres_sum = 0
-        else:
-            pres_sum = np.nan  # Proxy can't speak to SP
-    else:
-        pres_sum = sum(filter(pd.notna, pres_items))
-
-    return sum([date_sum, pres_sum])
-
-
-# Executive domain
-# Clock test
-
-
-def clock_test(x, round):
-    cgdclkdraw = f'cg{round}dclkdraw'
-
-    if x[cgdclkdraw] in ['-1 Inapplicable', '-2 Proxy says cannot ask SP'] or pd.isna(x[cgdclkdraw]):
-        return np.nan
-    elif x[cgdclkdraw] in ['-3 Proxy says can ask SP but SP unable to answer',
-                           '-4 SP did not attempt to draw clock',
-                           '-7 SP refused to draw clock']:
-        return 0
-
-    elif x[cgdclkdraw] == '-9 Missing':  # impute mean score for missing
-        if x[f'cg{round}speaktosp'] == '1 YES':
-            return 2
-        elif x[f'cg{round}speaktosp'] == '-1 Inapplicable':
-            return 3
-    else:
-        return int(x[cgdclkdraw][0])
-
-
-# Memory domain
-# immediate + delayed word recall
-
-
-def memory_domain(x, round):
-
-    mem_str = [f'cg{round}dwrdimmrc', f'cg{round}dwrddlyrc']
-
-    mem_items = []
-    for mem in mem_str:
-        if x[mem] in ['-1 Inapplicable', '-2 Proxy says cannot ask SP', '-3 Proxy says can ask SP but SP unable to answer', '-7 SP refused activity', '-9 Missing']:
-            mem_items.append(0)
-        else:
-            # fix a round 2 specific coding error
-            if mem == 'cg2dwrdimmrc' and x['cg2dwrdimmrc'] == 10 and x['cg2dwrddlyrc'] == -3:
-                x['cg2dwrdimmrc'] = -3
-            mem_items.append(x[mem])
-
-    return sum(mem_items)
-
-
-def domain_binarize(x, round):
-
-    x['clock_binary'] = 0 if 1 < x.clock_test <= 5 else 1 if 0 <= x.clock_test <= 1 else np.nan
-
-    x['memory_binary'] = 0 if 3 < x.memory_domain <= 20 else 1 if 0 <= x.memory_domain <= 3 else np.nan
-
-    x['orientation_binary'] = 0 if 3 < x.orientation_domain <= 8 else 1 if 0 <= x.orientation_domain <= 3 else np.nan
-
-    x['domains_score'] = sum(
-        [x['clock_binary'], x['memory_binary'], x['orientation_binary']])
-
-    return x
-
-
-def final_update_dementia_class(x, round):
-
-    if pd.isna(x['dementia_class']) and x[f'cg{round}speaktosp'] in ['-1 Inapplicable', '1 YES']:
-        if x.domains_score in [2, 3]:
-            return 2
-        elif x.domains_score == 1:
-            return 1
-        elif x.domains_score == 0:
-            return 0
-        else:
-            return np.nan
-    else:
-        return x['dementia_class']
-
-
-def full_cognitive_derivation(sp, round):
-
-    # rename self-rated memory, immediate and delayed recall for convenience
-    sp['self_rated_memory'] = sp[f'cg{round}ratememry']
-    sp['imm_recall'] = sp[f'cg{round}dwrdimmrc']
-    sp['delayed_recall'] = sp[f'cg{round}dwrddlyrc']
-
-    sp['dementia_class'] = sp.apply(
-        dementia_class, round=round, axis=1)
-
-    sp['ad8_score'] = sp.apply(
-        ad8_score, round=round, axis=1)
-
-    sp['ad8_binary'] = sp.apply(
-        ad8_dementia, round=round, axis=1)
-
-    sp['dementia_class'] = sp.apply(
-        update_dementia_class, round=round, axis=1)
-
-    sp['orientation_domain'] = sp.apply(
-        orientation_domain, round=round, axis=1)
-
-    sp['clock_test'] = sp.apply(
-        clock_test, round=round, axis=1)
-
-    sp['memory_domain'] = sp.apply(
-        memory_domain, round=round, axis=1)
-
-    sp = sp.apply(
-        domain_binarize, round=round, axis=1)
-
-    sp['dementia_class'] = sp.apply(
-        final_update_dementia_class, round=round, axis=1)
-
-    return sp
-
-
-def round_join(round_list, baseline_vars, longitudinal_vars):
-
-    merged = round_list[0][['spid'] + baseline_vars + longitudinal_vars]
-    for i, r in enumerate(round_list[1:]):
-        processed_round = r[['spid'] + longitudinal_vars]
-        merged = merged.merge(processed_round, on='spid',
-                              how='left', suffixes=['', f'_{i+2}'])
-
-    return merged
+round_1_cohort.to_csv('output_files/baseline_processed_2.23.2020.csv')
+round_1_cohort.to_pickle('output_files/baseline_processed_2.23.2020.pkl')
