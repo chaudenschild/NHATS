@@ -623,36 +623,3 @@ def round_join(round_list, baseline_vars, longitudinal_vars):
                               how='left', suffixes=['', f'_{i+2}'])
 
     return merged
-
-
-round_1_cohort = full_cognitive_derivation(round_1_cohort, round=1)
-# Year joining
-
-round_2_sp = pd.read_stata('data/NHATS_Round_2_SP_File_v2.dta')
-round_3_sp = pd.read_stata('data/NHATS_Round_3_SP_File.dta')
-round_4_sp = pd.read_stata('data/NHATS_Round_4_SP_File.dta')
-round_5_sp = pd.read_stata('data/NHATS_Round_5B_SP_File.dta')
-round_6_sp = pd.read_stata('data/NHATS_Round_6_SP_File_v2.dta')
-round_7_sp = pd.read_stata('data/NHATS_Round_7_SP_File.dta')
-round_8_sp = pd.read_stata('data/NHATS_Round_8B_SP_File.dta')
-
-round_2_cohort = full_cognitive_derivation(round_2_sp, round=2)
-round_3_cohort = full_cognitive_derivation(round_3_sp, round=3)
-round_4_cohort = full_cognitive_derivation(round_4_sp, round=4)
-round_5_cohort = full_cognitive_derivation(round_5_sp, round=5)
-round_6_cohort = full_cognitive_derivation(round_6_sp, round=6)
-round_7_cohort = full_cognitive_derivation(round_7_sp, round=7)
-round_8_cohort = full_cognitive_derivation(round_8_sp, round=8)
-
-round_list = [round_1_cohort, round_2_cohort, round_3_cohort, round_4_cohort,
-              round_5_cohort, round_6_cohort, round_7_cohort, round_8_cohort]
-
-baseline_vars = ['grouping_1_so_status', 'grouping_2_so_status', 'sdoc_sarcopenia', 'sarcopenia', 'obesity', 'high_wc', 'gender', 'race', 'age_category',
-                 'smoking_status', 'education', 'heart_disease', 'hypertension', 'arthritis', 'diabetes', 'lung_disease', 'stroke', 'cancer', 'ever_walk', 'ever_walk', 'STEADI_score']
-
-longitudinal_vars = ['self_rated_memory', 'imm_recall', 'delayed_recall', 'clock_test', 'clock_binary',
-                     'orientation_domain', 'orientation_binary', 'memory_domain', 'memory_binary', 'ad8_score', 'ad8_binary', 'dementia_class']
-
-
-test = round_join(round_list, baseline_vars=baseline_vars,
-                  longitudinal_vars=longitudinal_vars)
